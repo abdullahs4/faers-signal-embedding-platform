@@ -40,10 +40,14 @@ import phenotypes
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "faers_signals.duckdb"
-DB_DOWNLOAD_URL = (
-    "https://github.com/abdullahs4/faers-signal-embedding-platform/"
-    "releases/download/data-v1/faers_signals.duckdb"
-)
+# The precomputed database is >100MB, so it can't be committed to git as a
+# single file. It is split into <100MB chunks tracked in data/ and
+# reassembled here on first launch.
+DB_PART_URLS = [
+    "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-00",
+    "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-01",
+    "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-02",
+]
 MIN_REPORTS_DEFAULT = 3
 AGE_CUTPOINT = 65
 
@@ -61,14 +65,17 @@ def get_connection() -> duckdb.DuckDBPyConnection:
             "First launch: downloading the precomputed signal database "
             "(~220 MB, one-time)..."
         ):
+            tmp_path = DB_PATH.with_suffix(".duckdb.tmp")
             try:
-                tmp_path = DB_PATH.with_suffix(".duckdb.part")
-                urllib.request.urlretrieve(DB_DOWNLOAD_URL, tmp_path)
+                with open(tmp_path, "wb") as out:
+                    for url in DB_PART_URLS:
+                        with urllib.request.urlopen(url) as resp:
+                            out.write(resp.read())
                 tmp_path.rename(DB_PATH)
             except Exception as exc:
+                tmp_path.unlink(missing_ok=True)
                 st.error(
-                    f"Could not download the signal database from "
-                    f"{DB_DOWNLOAD_URL}\n\n{exc}\n\n"
+                    f"Could not download the signal database.\n\n{exc}\n\n"
                     "Alternatively, run `python db_build.py` locally first to "
                     "precompute the signal tables from the raw CSV."
                 )
