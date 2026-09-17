@@ -26,6 +26,9 @@ Run:  streamlit run dashboard.py
 
 from __future__ import annotations
 
+import hashlib
+import os
+import uuid
 from pathlib import Path
 import urllib.request
 
@@ -42,12 +45,28 @@ APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "faers_signals.duckdb"
 # The precomputed database is >100MB, so it can't be committed to git as a
 # single file. It is split into <100MB chunks tracked in data/ and
-# reassembled here on first launch.
-DB_PART_URLS = [
-    "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-00",
-    "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-01",
-    "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-02",
+# reassembled here on first launch. Sizes and hashes are checked after every
+# download -- a previous deploy silently produced a truncated/corrupted file
+# (DuckDB "dictionary string index out of range"), most likely from two
+# concurrent script runs racing on the same temp file during cold start.
+DB_PARTS = [
+    (
+        "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-00",
+        94371840,
+        "f374d069f5dac4b1e9cadd27364bb9c175750f8578b47ed81e047572aceccb7b",
+    ),
+    (
+        "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-01",
+        94371840,
+        "05a6ee015afc6ad8d4027257baa41c1bb3a1bbef526a55696b9a27fb0e9e6f29",
+    ),
+    (
+        "https://raw.githubusercontent.com/abdullahs4/faers-signal-embedding-platform/main/data/faers_signals.duckdb.part-02",
+        49557504,
+        "06076fba3d7522f7e1b74e40123ebafb08c0813756f6c325706078f81a6fb4c6",
+    ),
 ]
+DB_EXPECTED_SIZE = sum(size for _, size, _ in DB_PARTS)
 MIN_REPORTS_DEFAULT = 3
 AGE_CUTPOINT = 65
 
@@ -58,6 +77,40 @@ st.set_page_config(page_title="FAERS Signal Embedding Platform", layout="wide")
 # Data access
 # ---------------------------------------------------------------------------
 
+def _download_db() -> None:
+    """Download and reassemble the chunked database, verifying every part's
+    size and SHA-256 before use, retrying a few times, and writing to a
+    unique per-attempt temp file so two racing script runs can never
+    corrupt each other's output."""
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        tmp_path = APP_DIR / f".faers_signals.duckdb.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        try:
+            with open(tmp_path, "wb") as out:
+                for url, expected_size, expected_sha256 in DB_PARTS:
+                    with urllib.request.urlopen(url, timeout=120) as resp:
+                        data = resp.read()
+                    if len(data) != expected_size:
+                        raise IOError(
+                            f"{url} downloaded {len(data)} bytes, expected {expected_size}"
+                        )
+                    actual_sha256 = hashlib.sha256(data).hexdigest()
+                    if actual_sha256 != expected_sha256:
+                        raise IOError(
+                            f"{url} sha256 {actual_sha256} != expected {expected_sha256}"
+                        )
+                    out.write(data)
+            actual_size = tmp_path.stat().st_size
+            if actual_size != DB_EXPECTED_SIZE:
+                raise IOError(f"assembled size {actual_size} != expected {DB_EXPECTED_SIZE}")
+            os.replace(tmp_path, DB_PATH)
+            return
+        except Exception as exc:
+            last_exc = exc
+            tmp_path.unlink(missing_ok=True)
+    raise RuntimeError(f"Failed to download signal database after 3 attempts: {last_exc}")
+
+
 @st.cache_resource
 def get_connection() -> duckdb.DuckDBPyConnection:
     if not DB_PATH.exists():
@@ -65,15 +118,9 @@ def get_connection() -> duckdb.DuckDBPyConnection:
             "First launch: downloading the precomputed signal database "
             "(~220 MB, one-time)..."
         ):
-            tmp_path = DB_PATH.with_suffix(".duckdb.tmp")
             try:
-                with open(tmp_path, "wb") as out:
-                    for url in DB_PART_URLS:
-                        with urllib.request.urlopen(url) as resp:
-                            out.write(resp.read())
-                tmp_path.rename(DB_PATH)
+                _download_db()
             except Exception as exc:
-                tmp_path.unlink(missing_ok=True)
                 st.error(
                     f"Could not download the signal database.\n\n{exc}\n\n"
                     "Alternatively, run `python db_build.py` locally first to "
