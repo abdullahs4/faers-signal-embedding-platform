@@ -113,12 +113,17 @@ def _download_db() -> None:
 
 @st.cache_resource
 def get_connection() -> duckdb.DuckDBPyConnection:
-    if not DB_PATH.exists():
+    # A file left over from a previous, interrupted run (crash, race, bad
+    # deploy) is indistinguishable from a good one by existence alone, so
+    # size is checked too; anything else self-heals by re-downloading
+    # rather than persisting a corrupted database across deploys.
+    if not DB_PATH.exists() or DB_PATH.stat().st_size != DB_EXPECTED_SIZE:
         with st.spinner(
             "First launch: downloading the precomputed signal database "
             "(~220 MB, one-time)..."
         ):
             try:
+                DB_PATH.unlink(missing_ok=True)
                 _download_db()
             except Exception as exc:
                 st.error(
