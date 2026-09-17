@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.duckdb
+*.duckdb.wal
+*.duckdb.part
+*.duckdb.tmp/
+results/
+*.log
+.DS_Store
+.streamlit/secrets.toml
