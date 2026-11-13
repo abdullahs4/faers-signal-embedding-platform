@@ -551,6 +551,7 @@ def get_embeddings(_con) -> pd.DataFrame:
         FROM signal_embeddings e
         LEFT JOIN (SELECT DISTINCT drug, drug_class FROM exposure) x USING (drug)
     """).fetchdf()
+    df["drug_class"] = [phenotypes.corrected_class(d, c) for d, c in zip(df["drug"], df["drug_class"])]
     df["cluster_label"] = df["cluster"].map(lambda c: "noise" if c == -1 else f"cluster {c}")
     return df
 
@@ -562,7 +563,7 @@ def get_cluster_profiles(_con) -> pd.DataFrame:
 
 @st.cache_data
 def get_neighbors(_con, drug: str, pt: str) -> pd.DataFrame:
-    return _con.execute("""
+    df = _con.execute("""
         SELECT n.rank, n.neighbor_drug AS drug, n.neighbor_pt AS pt, n.similarity,
                f.phenotype, f.ror_global, f.n_reports, e.cluster, e.anomaly_percentile,
                x.drug_class
@@ -573,6 +574,8 @@ def get_neighbors(_con, drug: str, pt: str) -> pd.DataFrame:
         WHERE n.drug = ? AND n.pt = ?
         ORDER BY n.rank
     """, [drug, pt]).fetchdf()
+    df["drug_class"] = [phenotypes.corrected_class(d, c) for d, c in zip(df["drug"], df["drug_class"])]
+    return df
 
 
 # ---- Event families and drug profiles (family_build.py) -------------------
@@ -604,7 +607,7 @@ def get_family_data(_con) -> dict | None:
         FROM signal_embeddings e
         LEFT JOIN (SELECT DISTINCT drug, drug_class FROM exposure) x USING (drug)
     """).fetchdf()
-    cls = dict(zip(raw["drug"], raw["drug_class"].fillna("Unclassified")))
+    cls = {d: phenotypes.corrected_class(d, c) for d, c in zip(raw["drug"], raw["drug_class"])}
     pairs = family_build.prepare_pairs(raw)
     M = family_build.event_matrix(pairs)
     if family_build.event_order_hash(M.index) != meta["event_order_sha256"]:

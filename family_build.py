@@ -51,6 +51,8 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+import phenotypes
+
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "faers_signals.duckdb"
 OUT_DIR = APP_DIR / "data"
@@ -213,7 +215,7 @@ def main() -> None:
     con = duckdb.connect(str(DB_PATH), read_only=True)
     pairs = prepare_pairs(con.execute(
         "SELECT drug, pt, n_reports, ror_global FROM signal_embeddings").fetchdf())
-    cls = {d: (c or "Unclassified") for d, c in
+    cls = {d: phenotypes.corrected_class(d, c) for d, c in
            con.execute("SELECT DISTINCT drug, drug_class FROM exposure").fetchall()}
     con.close()
     log(f"{len(pairs):,} modelled pairs from signal_embeddings")

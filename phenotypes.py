@@ -206,3 +206,22 @@ def assign_phenotypes(df: pd.DataFrame, t: dict = THRESHOLDS) -> pd.DataFrame:
     label[~sig] = "No disproportionality"
     d["phenotype"] = label
     return d
+
+
+# ---------------------------------------------------------------------------
+# 4. Therapeutic-class label corrections
+# ---------------------------------------------------------------------------
+# The extract's ATC-4 field mislabels one medication and leaves another empty.
+# Each is the only member of its true class in the curated universe, so no
+# same-class comparator or class-anomaly value changes; only the class labels
+# shown in the dashboard are corrected.
+CLASS_CORRECTIONS: dict[str, str] = {
+    "diltiazem": "Benzothiazepine derivatives",  # C08DB; extract says "Muscle relaxants"
+    "clavulanate / amoxicillin": "Combinations of penicillins, incl. beta-lactamase inhibitors",  # J01CR; empty
+}
+
+
+def corrected_class(drug: str, drug_class) -> str:
+    if drug in CLASS_CORRECTIONS:
+        return CLASS_CORRECTIONS[drug]
+    return drug_class if isinstance(drug_class, str) and drug_class else "Unclassified"
