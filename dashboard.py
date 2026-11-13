@@ -41,6 +41,13 @@ import streamlit as st
 import stats
 import phenotypes
 
+# Streamlit Cloud reruns this script after a git push but keeps local modules
+# that were already imported, so edits to them would otherwise need a manual
+# reboot of the app. Reloading is cheap (no heavy imports in these modules).
+import importlib
+for _module in (stats, phenotypes):
+    importlib.reload(_module)
+
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "faers_signals.duckdb"
 # The precomputed database is >100MB, so it can't be committed to git as a
@@ -581,6 +588,7 @@ def get_neighbors(_con, drug: str, pt: str) -> pd.DataFrame:
 # ---- Event families and drug profiles (family_build.py) -------------------
 
 import family_build
+importlib.reload(family_build)
 
 FAMILY_NOTE = ("Run `python family_build.py` once (after ml_build.py) to compute the event "
                "families and drug profiles; this tab then activates.")
