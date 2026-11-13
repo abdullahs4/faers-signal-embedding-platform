@@ -1,0 +1,60 @@
+{
+  "event_order_sha256": "63a8a7f660fea70ddc3902e5ce13d2184cf15e545576f66238cb58ee5042680c",
+  "events": {
+    "n_events": 3744,
+    "n_drugs": 54,
+    "n_families": 54,
+    "noise_share": 0.1233974358974359,
+    "purity": 0.8065204143814747,
+    "purity_permuted_mean": 0.1573071297989031,
+    "purity_permuted_max": 0.1663619744058501,
+    "seed_ari": [
+      0.8628085748107615,
+      0.819781926793397,
+      0.8958632323060899
+    ]
+  },
+  "drugs": {
+    "n_drugs": 54,
+    "n_events": 2744,
+    "groups": 12,
+    "nn_same_class": 0.48148148148148145,
+    "nn_same_class_permuted_mean": 0.0517037037037037,
+    "nn_same_class_permuted_max": 0.16666666666666666,
+    "ari_vs_class": 0.22537297451638233
+  },
+  "params": {
+    "ror_cap": 1000.0,
+    "event_min_reports": 5,
+    "drug_min_reports": 10,
+    "umap_cluster": {
+      "n_neighbors": 30,
+      "min_dist": 0.1,
+      "n_components": 2,
+      "metric": "cosine"
+    },
+    "umap_display": {
+      "n_neighbors": 100,
+      "min_dist": 0.6,
+      "n_components": 2,
+      "metric": "cosine"
+    },
+    "display_core_pct": 85,
+    "display_outer": 0.45,
+    "display_grid": 1000,
+    "hdbscan": {
+      "min_cluster_size": 25,
+      "min_samples": 5
+    },
+    "stability_seeds": [
+      1,
+      2,
+      3
+    ],
+    "permutations": 500,
+    "drug_groups": 12,
+    "coverage_dominant": 0.6,
+    "coverage_margin": 0.25,
+    "random_state": 0
+  }
+}
