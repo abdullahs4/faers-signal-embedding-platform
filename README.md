@@ -99,6 +99,23 @@ annual series (~20k). Adds `signal_embeddings`, `signal_neighbors`,
 `cluster_profiles` to the database and activates the three ML tabs in the
 dashboard. Checkpointed under `~/.faers_build/ml_ckpt`; `--reset` recomputes.
 
+## 1b'. Build the event families and drug profiles (~2 minutes)
+
+```bash
+python family_build.py
+```
+
+Clusters adverse events by which medications report them disproportionately
+(UMAP + HDBSCAN on each event's log-ROR profile across the 54 medications),
+and clusters medications by their reporting profiles (cosine similarity,
+average linkage). Only the slow, seed-dependent part is stored:
+`data/event_families.csv` (family label and display position of every event)
+and `data/families_meta.json` (parameters and validation statistics: purity
+against a permutation null, seed stability, nearest-drug class agreement).
+Both are small and committed to the repository. The "Event families" and
+"Drug profiles" tabs derive family profiles, drug similarities and the
+dendrogram from the database at load time, so the deployed app runs no UMAP.
+
 ## 1c. Export flat files
 
 ```bash
@@ -138,6 +155,9 @@ robustness, and a ranked table of every eligible outcome for that drug
 - `ml_build.py` -- Phase 4: scaling, UMAP, HDBSCAN, Isolation Forest,
   nearest neighbours. Parameters and the population choice are documented
   at the top of the file.
+- `family_build.py` -- event families and drug reporting profiles (a
+  second unsupervised view; see the module docstring for why the pair-level
+  embedding alone does not form natural groups).
 - `export_results.py` -- flat-file export; `results/README_results.txt`
   is the full column dictionary.
 
@@ -149,6 +169,6 @@ robustness, and a ranked table of every eligible outcome for that drug
 | 2 Statistical engine | done: ROR/PRR/CI, 3 comparators, annual series, subgroups |
 | 3 Embedding | done: 8 dimensions, robust scaling, display scores, phenotypes |
 | 4 ML | done: UMAP, HDBSCAN, Isolation Forest, k-NN retrieval |
-| 5 Visual analytics | done: profile, fingerprint, comparator time series, landscape, similar-signal panel, cluster/anomaly tables. Not built: the full Drug x Outcome matrix heat-map view |
+| 5 Visual analytics | done: profile, fingerprint, comparator time series, landscape, similar-signal panel, cluster/anomaly tables, event families, drug profiles. Not built: the full Drug x Outcome matrix heat-map view |
 | 6 Validation | **not started** -- threshold sensitivity, bootstrap stability, UMAP seed/parameter stability, ARI for HDBSCAN, temporal hold-forward. This is where the paper's evidence comes from. |
 | 7 Manuscript | -- |

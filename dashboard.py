@@ -304,8 +304,9 @@ with st.sidebar:
     if rec_pair:
         st.caption(f"Recommended pair: **{rec_pair}** -- {rec_reason}")
 
-tab_profile, tab_landscape, tab_similar, tab_clusters = st.tabs(
-    ["Signal profile", "Embedding landscape", "Similar signals", "Clusters & anomalies"]
+tab_profile, tab_landscape, tab_similar, tab_clusters, tab_families, tab_drugs = st.tabs(
+    ["Signal profile", "Embedding landscape", "Similar signals", "Clusters & anomalies",
+     "Event families", "Drug profiles"]
 )
 
 with tab_profile:
@@ -574,11 +575,59 @@ def get_neighbors(_con, drug: str, pt: str) -> pd.DataFrame:
     """, [drug, pt]).fetchdf()
 
 
+# ---- Event families and drug profiles (family_build.py) -------------------
+
+import family_build
+
+FAMILY_NOTE = ("Run `python family_build.py` once (after ml_build.py) to compute the event "
+               "families and drug profiles; this tab then activates.")
+MIXED_COLOR, UNASSIGNED_COLOR = "#8a8984", "#d9d8d4"
+CLASS_PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6",
+                 "#e34948", "#17becf", "#8c564b", "#bcbd22", "#1f3a93", "#c2185b", "#00a6a6",
+                 "#b8860b", "#2e8b57", "#9370db", "#ff7f50", "#4682b4", "#a0522d", "#556b2f",
+                 "#d2691e", "#7b3294", "#e7298a"]
+
+
+def families_available() -> bool:
+    return family_build.EVENTS_FILE.exists() and family_build.META_FILE.exists()
+
+
+@st.cache_data
+def get_family_data(_con) -> dict | None:
+    """Stored family labels and display positions, plus profiles derived live from
+    the database (deterministic, milliseconds). None if the stored file no longer
+    matches the database's event list."""
+    import json
+    meta = json.loads(family_build.META_FILE.read_text())
+    raw = _con.execute("""
+        SELECT e.drug, e.pt, e.n_reports, e.ror_global, x.drug_class
+        FROM signal_embeddings e
+        LEFT JOIN (SELECT DISTINCT drug, drug_class FROM exposure) x USING (drug)
+    """).fetchdf()
+    cls = dict(zip(raw["drug"], raw["drug_class"].fillna("Unclassified")))
+    pairs = family_build.prepare_pairs(raw)
+    M = family_build.event_matrix(pairs)
+    if family_build.event_order_hash(M.index) != meta["event_order_sha256"]:
+        return None
+    stored = pd.read_csv(family_build.EVENTS_FILE)
+    events, profiles = family_build.family_tables(pairs, M, stored["family"].to_numpy(), cls)
+    events["disp_x"], events["disp_y"] = stored["x"].to_numpy(), stored["y"].to_numpy()
+    drugs, sim = family_build.drug_tables(family_build.drug_matrix(pairs), cls)
+    return {"events": events, "profiles": profiles, "drugs": drugs, "similarity": sim, "meta": meta}
+
+
+def class_colors(classes) -> dict:
+    named = sorted(c for c in set(classes) if c not in ("Mixed", "Unassigned"))
+    colors = {c: CLASS_PALETTE[i % len(CLASS_PALETTE)] for i, c in enumerate(named)}
+    colors.update({"Mixed": MIXED_COLOR, "Unassigned": UNASSIGNED_COLOR})
+    return colors
+
+
 ML_NOTE = ("Run `python ml_build.py` once to compute the UMAP / HDBSCAN / Isolation Forest / "
            "nearest-neighbour layer; this tab then activates.")
 
 if not ml_available(con):
-    for t in (tab_landscape, tab_similar, tab_clusters):
+    for t in (tab_landscape, tab_similar, tab_clusters, tab_families, tab_drugs):
         with t:
             st.info(ML_NOTE)
 else:
@@ -717,3 +766,218 @@ else:
                      width="stretch", hide_index=True)
         st.caption("A high anomaly percentile means an unusual *combination* of dimensions, not the "
                    "largest ROR. Interpretation stays hypothesis-generating (spec section 25).")
+
+    # ---- Tab: event families (family_build.py) ---------------------------
+    with tab_families:
+        st.markdown("### Event families: adverse events reported for the same medications")
+        fd = get_family_data(con) if families_available() else None
+        if not families_available():
+            st.info(FAMILY_NOTE)
+        elif fd is None:
+            st.warning("The stored event families no longer match the signal database. "
+                       "Re-run `python family_build.py`.")
+        else:
+            ev, fprof, meta = fd["events"], fd["profiles"], fd["meta"]
+            ms, mp = meta["events"], meta["params"]
+            st.caption(
+                f"Each point is one adverse event ({ms['n_events']:,} events), placed by its profile across "
+                f"the {ms['n_drugs']} medications: the log ROR against the curated universe where the pair is "
+                "disproportionate, 0 otherwise. Events reported disproportionately for the same medications "
+                "sit together. HDBSCAN on a UMAP layout of these profiles finds "
+                f"{ms['n_families']} families; {ms['noise_share']:.0%} of events belong to none. Families are "
+                "not auto-named: read the medications and events, then label."
+            )
+            st.caption(
+                f"Validation: {ms['purity']:.0%} of a family's events are on average led by one therapeutic "
+                f"class, against {ms['purity_permuted_mean']:.0%} when family labels are shuffled "
+                f"({mp['permutations']} permutations); agreement with re-runs on other random seeds "
+                f"(adjusted Rand index) {min(ms['seed_ari']):.2f}-{max(ms['seed_ari']):.2f}."
+            )
+
+            sel_ev = ev[ev["pt"] == pt]
+            sel_family = int(sel_ev["family"].iloc[0]) if not sel_ev.empty else -1
+
+            c1, c2 = st.columns([1, 1])
+            color_mode = c1.radio("Colour", ["Dominant therapeutic class", "Selected family only"],
+                                  horizontal=True)
+            show_drug = c2.checkbox(f"Mark events disproportionate for {drug}", value=False)
+
+            fam_ids = fprof["family"].tolist()
+            fam_label = {int(r.family): f"Family {int(r.family)} ({r.n_events} events): {r.drugs}"
+                         for r in fprof.itertuples()}
+            default_fam = fam_ids.index(sel_family) if sel_family in fam_ids else 0
+            family = st.selectbox("Family", fam_ids, index=default_fam,
+                                  format_func=lambda k: fam_label.get(int(k), str(k)))
+
+            hover = ("<b>%{customdata[0]}</b><br>family %{customdata[1]}<br>%{customdata[2]}"
+                     "<br>%{customdata[3]} medications, %{customdata[4]:,} reports<extra></extra>")
+            cols = ["pt", "family", "dominant_class", "n_drugs", "total_reports"]
+            fig_f = go.Figure()
+            if color_mode == "Dominant therapeutic class":
+                colors = class_colors(ev["dominant_class"])
+                order = ["Unassigned", "Mixed"] + sorted(c for c in colors if c not in ("Mixed", "Unassigned"))
+                for c in order:
+                    g = ev[ev["dominant_class"] == c]
+                    if g.empty:
+                        continue
+                    fig_f.add_trace(go.Scattergl(
+                        x=g["disp_x"], y=g["disp_y"], mode="markers", name=c,
+                        marker=dict(size=4 if c == "Unassigned" else 6, color=colors[c],
+                                    opacity=0.6 if c == "Unassigned" else 0.85),
+                        customdata=g[cols].to_numpy(), hovertemplate=hover,
+                    ))
+            else:
+                rest, g = ev[ev["family"] != family], ev[ev["family"] == family]
+                fig_f.add_trace(go.Scattergl(
+                    x=rest["disp_x"], y=rest["disp_y"], mode="markers", name="other events",
+                    marker=dict(size=4, color=UNASSIGNED_COLOR), customdata=rest[cols].to_numpy(),
+                    hovertemplate=hover,
+                ))
+                fig_f.add_trace(go.Scattergl(
+                    x=g["disp_x"], y=g["disp_y"], mode="markers", name=f"family {family}",
+                    marker=dict(size=7, color="#2a78d6"), customdata=g[cols].to_numpy(),
+                    hovertemplate=hover,
+                ))
+            if show_drug:
+                mine = set(emb.loc[(emb["drug"] == drug) & (emb["n_reports"] >= mp["event_min_reports"]), "pt"])
+                g = ev[ev["pt"].isin(mine)]
+                fig_f.add_trace(go.Scattergl(
+                    x=g["disp_x"], y=g["disp_y"], mode="markers", name=f"disproportionate for {drug}",
+                    marker=dict(size=8, color="rgba(0,0,0,0)", line=dict(width=1.2, color="#0b0b0b")),
+                    customdata=g[cols].to_numpy(), hovertemplate=hover,
+                ))
+            if not sel_ev.empty:
+                fig_f.add_trace(go.Scatter(
+                    x=sel_ev["disp_x"], y=sel_ev["disp_y"], mode="markers", name=f"selected: {pt}",
+                    marker=dict(size=18, symbol="star", color="#F58518", line=dict(width=1.5, color="black")),
+                    hoverinfo="name",
+                ))
+            fig_f.update_layout(height=640, margin=dict(t=20), legend=dict(orientation="h", y=-0.08),
+                                xaxis=dict(visible=False), yaxis=dict(visible=False))
+            st.plotly_chart(fig_f, width="stretch")
+            st.caption("Positions come from a display layout of the same profiles, with far-off islands "
+                       "drawn closer to the centre; distances between separate islands are not meaningful. "
+                       "Families are computed on a second, tighter layout, so a few events may sit apart "
+                       "from the rest of their family.")
+            if sel_ev.empty:
+                st.caption(f"{pt} is not on this map: it needs at least {mp['event_min_reports']} reports "
+                           "with lower CI > 1 for at least one modelled medication.")
+            elif sel_family == -1:
+                st.caption(f"{pt} is not assigned to a family: medications from several classes report it, "
+                           "so its profile matches no single family.")
+
+            # ---- profile of the chosen family ----
+            fr = fprof[fprof["family"] == family].iloc[0]
+            st.markdown(f"#### Family {family}: {int(fr['n_events'])} events")
+            st.caption(f"Dominant class: **{fr['dominant_class']}** - medications reporting most of its "
+                       f"events (share of events): {fr['drugs']} - mean {fr['mean_drugs_per_event']:.1f} "
+                       "medications per event.")
+            members = ev.loc[ev["family"] == family, ["pt", "n_drugs", "total_reports"]]
+            pairs = emb[emb["pt"].isin(members["pt"]) & (emb["n_reports"] >= mp["event_min_reports"])]
+            top = (pairs.sort_values("ror_global", ascending=False).groupby("pt").head(4)
+                   .assign(lbl=lambda t: t["drug"] + " (" + t["ror_global"].round(1).astype(str) + ")")
+                   .groupby("pt")["lbl"].agg(", ".join).rename("Medications (ROR)"))
+            members = (members.merge(top, left_on="pt", right_index=True, how="left")
+                       .sort_values("total_reports", ascending=False))
+            st.dataframe(members.rename(columns={"pt": "Adverse event", "n_drugs": "Medications",
+                                                 "total_reports": "Reports"}),
+                         width="stretch", hide_index=True, height=320)
+
+            with st.expander("All families"):
+                st.dataframe(fprof.rename(columns={
+                    "family": "Family", "n_events": "Events", "dominant_class": "Dominant class",
+                    "drugs": "Medications (share of events)", "mean_drugs_per_event": "Medications per event",
+                    "top_events": "Most-reported events", "total_reports": "Reports"}).round(1),
+                    width="stretch", hide_index=True)
+            st.caption("A family dominated by one medication or class points to its recognised reactions; "
+                       "a family spread across many unrelated medications points to the indication "
+                       "(for example heart failure markers for cardiovascular drugs) or to reports that list "
+                       "many medications at once. Interpretation stays hypothesis-generating.")
+
+    # ---- Tab: drug profiles (family_build.py) ---------------------------
+    with tab_drugs:
+        st.markdown("### Drug profiles: which medications report the same adverse events")
+        fd = get_family_data(con) if families_available() else None
+        if not families_available():
+            st.info(FAMILY_NOTE)
+        elif fd is None:
+            st.warning("The stored event families no longer match the signal database. "
+                       "Re-run `python family_build.py`.")
+        else:
+            dp, sim, meta = fd["drugs"], fd["similarity"], fd["meta"]
+            md, mp = meta["drugs"], meta["params"]
+            st.caption(
+                f"Each medication is described by its log ROR across {md['n_events']:,} adverse events "
+                "(events disproportionate for at least two medications). Cosine similarity compares the "
+                "profiles; average-linkage clustering orders them. Therapeutic class is not used, only "
+                f"shown. Nearest medication belongs to the same ATC-4 class for {md['nn_same_class']:.0%} of "
+                f"medications, against {md['nn_same_class_permuted_mean']:.0%} with shuffled classes; "
+                f"agreement of {md['groups']} groups with class (adjusted Rand index) {md['ari_vs_class']:.2f}."
+            )
+            order = dp.sort_values("order")["drug"].tolist()
+            mat = sim.loc[order, order]
+            z = mat.to_numpy().copy()
+            np.fill_diagonal(z, np.nan)
+            klass = dp.set_index("drug")["drug_class"]
+            text = [[f"{a} ({klass[a]})<br>{b} ({klass[b]})" for b in order] for a in order]
+            heat = go.Figure(go.Heatmap(
+                z=z, x=order, y=order, colorscale="Blues", zmin=0, zmax=0.8, text=text,
+                hovertemplate="%{text}<br>similarity %{z:.2f}<extra></extra>",
+                colorbar=dict(title="cosine"),
+            ))
+            groups = dp.set_index("drug").loc[order, "group"].to_numpy()
+            for i in range(1, len(order)):
+                if groups[i] != groups[i - 1]:
+                    for kw in (dict(x0=-0.5, x1=len(order) - 0.5, y0=i - 0.5, y1=i - 0.5),
+                               dict(y0=-0.5, y1=len(order) - 0.5, x0=i - 0.5, x1=i - 0.5)):
+                        heat.add_shape(type="line", line=dict(color="white", width=2), **kw)
+            if drug in order:
+                j = order.index(drug)
+                heat.add_shape(type="rect", x0=-0.5, x1=len(order) - 0.5, y0=j - 0.5, y1=j + 0.5,
+                               line=dict(color="#F58518", width=2))
+            heat.update_layout(height=900, margin=dict(t=20, l=10),
+                               yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
+                               xaxis=dict(tickfont=dict(size=10), tickangle=-60))
+            st.plotly_chart(heat, width="stretch")
+            st.caption(f"White lines separate the {md['groups']} groups of the dendrogram; the orange box "
+                       f"marks {drug}.")
+
+            if drug not in order:
+                st.info(f"{drug} has no disproportionate events in the modelled set.")
+            else:
+                st.markdown(f"#### Medications with the most similar profile to {drug}")
+                nb = (sim[drug].drop(drug).sort_values(ascending=False).head(8)
+                      .rename("similarity").rename_axis("other_drug").reset_index())
+                mine = emb[(emb["drug"] == drug) & (emb["n_reports"] >= mp["drug_min_reports"])]
+                shared_n = []
+                for other in nb["other_drug"]:
+                    theirs = emb[(emb["drug"] == other) & (emb["n_reports"] >= mp["drug_min_reports"])]
+                    shared_n.append(len(set(mine["pt"]) & set(theirs["pt"])))
+                nb = nb.assign(shared_events=shared_n, drug_class=nb["other_drug"].map(klass),
+                               same_class=nb["other_drug"].map(klass) == klass[drug])
+                st.dataframe(nb[["other_drug", "drug_class", "same_class", "similarity", "shared_events"]]
+                             .rename(columns={"other_drug": "Medication", "drug_class": "ATC-4 class",
+                                              "same_class": f"Same class as {drug}",
+                                              "similarity": "Cosine similarity",
+                                              "shared_events": "Shared disproportionate events"}).round(2),
+                             width="stretch", hide_index=True)
+
+                other = st.selectbox("Show shared events with", nb["other_drug"].tolist())
+                theirs = emb[(emb["drug"] == other) & (emb["n_reports"] >= mp["drug_min_reports"])]
+                shared = mine[["pt", "ror_global", "n_reports"]].merge(
+                    theirs[["pt", "ror_global", "n_reports"]], on="pt", suffixes=(f" {drug}", f" {other}"))
+                fam = fd["events"].set_index("pt")["family"]
+                shared["family"] = shared["pt"].map(fam).fillna(-1).astype(int)
+                shared = shared.sort_values(f"n_reports {drug}", ascending=False)
+                if klass[other] != klass[drug]:
+                    st.caption(f"{other} is in a different class ({klass[other]}). Read the shared events: "
+                               "a clinically coherent set suggests a shared reaction or indication; a long "
+                               "list from unrelated clinical areas with similar report counts suggests reports "
+                               "that list both medications.")
+                st.dataframe(shared.rename(columns={"pt": "Adverse event",
+                                                    f"ror_global {drug}": f"ROR {drug}",
+                                                    f"ror_global {other}": f"ROR {other}",
+                                                    f"n_reports {drug}": f"N {drug}",
+                                                    f"n_reports {other}": f"N {other}",
+                                                    "family": "Event family"}).round(2),
+                             width="stretch", hide_index=True, height=350)
